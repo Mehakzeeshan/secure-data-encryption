@@ -1,105 +1,114 @@
 import streamlit as st
 import hashlib
+import json
+import os
 from cryptography.fernet import Fernet
 
-# --- Session State Setup ---
+# Generate/load a secure key (only for demo purposes)
+KEY_FILE = "key.key"
+DATA_FILE = "data.json"
+
+if os.path.exists(KEY_FILE):
+    with open(KEY_FILE, "rb") as f:
+        KEY = f.read()
+else:
+    KEY = Fernet.generate_key()
+    with open(KEY_FILE, "wb") as f:
+        f.write(KEY)
+
+cipher = Fernet(KEY)
+
+# Load existing data
+if os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "r") as f:
+        stored_data = json.load(f)
+else:
+    stored_data = {}
+
+# Initialize session state
 if "failed_attempts" not in st.session_state:
     st.session_state.failed_attempts = 0
-if "reauthorized" not in st.session_state:
-    st.session_state.reauthorized = False
-if "last_page" not in st.session_state:
-    st.session_state.last_page = "Home"
-if "encryption_key" not in st.session_state:
-    st.session_state.encryption_key = Fernet.generate_key()
+if "authorized" not in st.session_state:
+    st.session_state.authorized = False
 
-# --- Cipher Setup ---
-cipher = Fernet(st.session_state.encryption_key)
-
-# --- In-Memory Storage ---
-stored_data = {}  # Format: { encrypted_text: { "encrypted_text": "...", "passkey": "hashed" } }
-
-# --- Helper Functions ---
+# Hashing
 def hash_passkey(passkey):
     return hashlib.sha256(passkey.encode()).hexdigest()
 
-def encrypt_data(text, passkey):
+# Encryption
+def encrypt_data(text):
     return cipher.encrypt(text.encode()).decode()
 
-def decrypt_data(encrypted_text, passkey):
-    hashed_passkey = hash_passkey(passkey)
-    for key, value in stored_data.items():
-        if value["encrypted_text"] == encrypted_text and value["passkey"] == hashed_passkey:
-            st.session_state.failed_attempts = 0
-            return cipher.decrypt(encrypted_text.encode()).decode()
-    st.session_state.failed_attempts += 1
-    return None
+# Decryption
+def decrypt_data(encrypted_text):
+    return cipher.decrypt(encrypted_text.encode()).decode()
 
-# --- Sidebar Navigation ---
+# Save to JSON
+def save_data():
+    with open(DATA_FILE, "w") as f:
+        json.dump(stored_data, f)
+
+# App UI
+st.title("🔐 Secure Data Encryption System")
+
 menu = ["Home", "Store Data", "Retrieve Data", "Login"]
-choice = st.sidebar.selectbox("Navigation", menu, index=menu.index(st.session_state.last_page))
-st.session_state.last_page = choice
-
-# --- Page Logic ---
-st.title("🔒 Secure Data Encryption System")
+choice = st.sidebar.selectbox("Navigation", menu)
 
 if choice == "Home":
-    st.subheader("🏠 Welcome to the Secure Data System")
-    st.write("Use this app to **securely store and retrieve data** using unique passkeys.")
+    st.subheader("🏠 Welcome")
+    st.write("Securely store and retrieve data using encryption and hashed passkeys.")
 
 elif choice == "Store Data":
-    st.subheader("📂 Store Data Securely")
-    user_data = st.text_area("Enter Data:")
-    passkey = st.text_input("Enter Passkey:", type="password")
+    st.subheader("📁 Store Data Securely")
 
-    if st.button("Encrypt & Save"):
-        if user_data and passkey:
-            hashed_passkey = hash_passkey(passkey)
-            encrypted_text = encrypt_data(user_data, passkey)
-            stored_data[encrypted_text] = {
-                "encrypted_text": encrypted_text,
-                "passkey": hashed_passkey
+    username = st.text_input("Enter a Username")
+    data = st.text_area("Enter your Data")
+    passkey = st.text_input("Create a Passkey", type="password")
+
+    if st.button("Encrypt & Store"):
+        if username and data and passkey:
+            hashed_key = hash_passkey(passkey)
+            encrypted = encrypt_data(data)
+            stored_data[username] = {
+                "encrypted": encrypted,
+                "passkey": hashed_key
             }
+            save_data()
             st.success("✅ Data stored securely!")
-            st.code(encrypted_text, language="text")
         else:
-            st.error("⚠️ Both fields are required!")
+            st.error("⚠️ All fields are required!")
 
 elif choice == "Retrieve Data":
-    if st.session_state.failed_attempts >= 3 and not st.session_state.reauthorized:
-        st.warning("🔒 Too many failed attempts! Please reauthorize.")
-        st.session_state.last_page = "Login"
-        st.rerun()
-    else:
-        st.subheader("🔍 Retrieve Your Data")
-        encrypted_text = st.text_area("Enter Encrypted Data:")
-        passkey = st.text_input("Enter Passkey:", type="password")
+    st.subheader("🔎 Retrieve Encrypted Data")
 
-        if st.button("Decrypt"):
-            if encrypted_text and passkey:
-                decrypted_text = decrypt_data(encrypted_text, passkey)
-                if decrypted_text:
-                    st.success("✅ Decrypted Data:")
-                    st.code(decrypted_text, language="text")
-                else:
-                    remaining = max(0, 3 - st.session_state.failed_attempts)
-                    st.error(f"❌ Incorrect passkey! Attempts remaining: {remaining}")
-                    if st.session_state.failed_attempts >= 3:
-                        st.warning("🔐 Redirecting to Login...")
-                        st.session_state.last_page = "Login"
-                        st.rerun()
+    username = st.text_input("Enter Username")
+    passkey = st.text_input("Enter Passkey", type="password")
+
+    if st.button("Decrypt"):
+        if username in stored_data:
+            hashed = hash_passkey(passkey)
+            if hashed == stored_data[username]["passkey"]:
+                decrypted = decrypt_data(stored_data[username]["encrypted"])
+                st.success(f"✅ Your Decrypted Data: {decrypted}")
+                st.session_state.failed_attempts = 0
             else:
-                st.error("⚠️ Both fields are required!")
+                st.session_state.failed_attempts += 1
+                remaining = 3 - st.session_state.failed_attempts
+                st.error(f"❌ Incorrect passkey! Attempts remaining: {remaining}")
+                if st.session_state.failed_attempts >= 3:
+                    st.warning("🔒 Too many failed attempts! Redirecting to login...")
+                    st.switch_page("Login")
+        else:
+            st.error("❌ Username not found!")
 
 elif choice == "Login":
-    st.subheader("🔑 Reauthorization Required")
-    login_pass = st.text_input("Enter Master Password:", type="password")
+    st.subheader("🔑 Login to Continue")
+    master_key = st.text_input("Enter Admin Password", type="password")
 
     if st.button("Login"):
-        if login_pass == "admin123":  # Replace with real auth in production
+        if master_key == "admin123":  # Replace in production
+            st.session_state.authorized = True
             st.session_state.failed_attempts = 0
-            st.session_state.reauthorized = True
-            st.session_state.last_page = "Retrieve Data"
-            st.success("✅ Reauthorized! Redirecting...")
-            st.rerun()
+            st.success("✅ Access Granted! Now you can retry.")
         else:
-            st.error("❌ Incorrect master password!")
+            st.error("❌ Incorrect Admin Password.")
